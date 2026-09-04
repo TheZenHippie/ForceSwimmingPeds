@@ -1,4 +1,4 @@
-# 🏊 ForceSwimmingPeds for Grand Theft Auto V
+   # 🏊 Swimming Peds for Grand Theft Auto V
 
 [![Platform: PC](https://img.shields.io/badge/Platform-GTA%20V%20(PC)-blue.svg)](#)
 [![ScriptHookVDotNet](https://img.shields.io/badge/SHVDN-v3-orange.svg)](https://github.com/scripthookvdotnet/scripthookvdotnet)
