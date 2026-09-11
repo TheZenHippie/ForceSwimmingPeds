@@ -67,7 +67,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="class.cs" />
+    <Compile Include="ForceSwimmingPeds.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <None Include="ForceSwimmingPeds.ini">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -75,10 +75,12 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
-    <PostBuildEvent>COPY "$(TargetPath)" "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
-IF EXIST "$(ProjectDir)ForceSwimmingPeds.ini" (
-  IF NOT EXIST "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts\ForceSwimmingPeds.ini" (
-    COPY "$(ProjectDir)ForceSwimmingPeds.ini" "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
+    <PostBuildEvent>IF EXIST "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts" (
+  COPY "$(TargetPath)" "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
+  IF EXIST "$(ProjectDir)ForceSwimmingPeds.ini" (
+    IF NOT EXIST "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts\ForceSwimmingPeds.ini" (
+      COPY "$(ProjectDir)ForceSwimmingPeds.ini" "D:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
+    )
   )
 )</PostBuildEvent>
   </PropertyGroup>

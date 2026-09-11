@@ -19,6 +19,13 @@ using Screen = GTA.UI.Screen;
 public class ForceSwimmingPeds : Script
 {
     private const string IniFileName = "ForceSwimmingPeds.ini";
+    private const float DegToRad = 0.0174532925f;
+
+    // Cached visual aid drawing assets
+    private static readonly Color CylinderColor = Color.FromArgb(80, 46, 204, 113);
+    private static readonly Color ConeColor = Color.FromArgb(230, 241, 196, 15);
+    private static readonly Vector3 ConeRotation = new Vector3(0.0f, 180.0f, 0.0f);
+    private static readonly Vector3 ConeScale = new Vector3(0.5f, 0.5f, 0.7f);
 
     // ============================================================
     // Location Profile Model
@@ -60,6 +67,7 @@ public class ForceSwimmingPeds : Script
     private int _restDurationSeconds = 30;
     private int _swimDurationSeconds = 45;
     private bool _enabled = false;
+    private string _cachedIniPath = null;
 
     // ============================================================
     // LemonUI Menu Elements
@@ -95,6 +103,8 @@ public class ForceSwimmingPeds : Script
     private int _lastSliderY = 100;
     private int _lastSliderZ = 100;
     private bool _isUpdatingUI = false;
+
+    private bool IsAnyMenuOpen => _mainMenu.Visible || _advancedMenu.Visible || _coordsMenu.Visible || _manageLocationsMenu.Visible;
 
     // ============================================================
     // Location Picking State
@@ -186,6 +196,7 @@ public class ForceSwimmingPeds : Script
     }
 
     private readonly List<ActiveSwimmer> _activeSwimmers = new List<ActiveSwimmer>();
+    private readonly List<Ped> _candidatePeds = new List<Ped>(16);
     private readonly Random _random = new Random();
     private int _lastCheckTime = 0;
 
@@ -479,7 +490,7 @@ public class ForceSwimmingPeds : Script
             string input = Game.GetUserInput(WindowTitle.EnterMessage60, _targetLocation.Y.ToString("F2", CultureInfo.InvariantCulture), 30);
             if (!string.IsNullOrEmpty(input) && float.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out float val))
             {
-                _targetLocation = new Vector3(_targetLocation.X, val, _targetLocation.Z);
+                _targetLocation = new Vector3(val, _targetLocation.Y, _targetLocation.Z);
                 if (_activeLocation != null) _activeLocation.Center = _targetLocation;
                 UpdateSlidersFromLocation();
                 SaveSettings();
@@ -711,8 +722,9 @@ public class ForceSwimmingPeds : Script
         int count = 0;
         int now = Game.GameTime;
 
-        foreach (var swimmer in _activeSwimmers)
+        for (int i = 0; i < _activeSwimmers.Count; i++)
         {
+            var swimmer = _activeSwimmers[i];
             if (swimmer.Ped != null && swimmer.Ped.Exists() && swimmer.Ped.IsAlive)
             {
                 if (swimmer.State == SwimmerState.SwimmingToCenter || swimmer.State == SwimmerState.SwimmingInPool)
@@ -720,6 +732,13 @@ public class ForceSwimmingPeds : Script
                     swimmer.State = SwimmerState.ReturningToEntry;
                     swimmer.StateStartTime = now;
                     swimmer.LastTaskTime = 0;
+
+                    // Pre-load saved animation dictionary early if applicable
+                    if (swimmer.HadTaskLoop && swimmer.TaskType == 1 && !string.IsNullOrEmpty(swimmer.SavedAnimDict))
+                    {
+                        Function.Call(Hash.REQUEST_ANIM_DICT, swimmer.SavedAnimDict);
+                    }
+
                     count++;
                 }
             }
@@ -769,8 +788,7 @@ public class ForceSwimmingPeds : Script
             }
             else
             {
-                bool anyMenuOpen = _mainMenu.Visible || _advancedMenu.Visible || _coordsMenu.Visible || _manageLocationsMenu.Visible;
-                if (anyMenuOpen)
+                if (IsAnyMenuOpen)
                 {
                     _mainMenu.Visible = false;
                     _advancedMenu.Visible = false;
@@ -817,9 +835,7 @@ public class ForceSwimmingPeds : Script
     {
         _pool.Process();
 
-        bool anyMenuOpen = _mainMenu.Visible || _advancedMenu.Visible || _coordsMenu.Visible || _manageLocationsMenu.Visible;
-
-        if (anyMenuOpen)
+        if (IsAnyMenuOpen)
         {
             // Suppress attack/firing controls while menus are open so player can look and move around freely without punching or shooting
             Game.DisableControlThisFrame(Control.Attack);
@@ -887,13 +903,15 @@ public class ForceSwimmingPeds : Script
         Vector3 hitPoint = ray.DidHit ? ray.HitPosition : (camPos + (rayDir * 40.0f));
 
         // Probe water height at the hit coordinates
-        var waterHeightArg = new OutputArgument();
-        if (Function.Call<bool>(Hash.GET_WATER_HEIGHT, hitPoint.X, hitPoint.Y, hitPoint.Z, waterHeightArg))
+        using (var waterHeightArg = new OutputArgument())
         {
-            float wh = waterHeightArg.GetResult<float>();
-            if (wh > hitPoint.Z - 6.0f && wh < hitPoint.Z + 6.0f)
+            if (Function.Call<bool>(Hash.GET_WATER_HEIGHT, hitPoint.X, hitPoint.Y, hitPoint.Z, waterHeightArg))
             {
-                hitPoint = new Vector3(hitPoint.X, hitPoint.Y, wh);
+                float wh = waterHeightArg.GetResult<float>();
+                if (wh > hitPoint.Z - 6.0f && wh < hitPoint.Z + 6.0f)
+                {
+                    hitPoint = new Vector3(hitPoint.X, hitPoint.Y, wh);
+                }
             }
         }
 
@@ -964,7 +982,7 @@ public class ForceSwimmingPeds : Script
             Vector3.Zero,
             Vector3.Zero,
             new Vector3(radius * 2.0f, radius * 2.0f, 2.5f),
-            Color.FromArgb(80, 46, 204, 113) // Translucent emerald green
+            CylinderColor
         );
 
         // 2. Center point focal indicator (downward-pointing golden arrow/cone)
@@ -972,9 +990,9 @@ public class ForceSwimmingPeds : Script
             MarkerType.UpsideDownCone,
             new Vector3(center.X, center.Y, center.Z + 1.2f),
             Vector3.Zero,
-            new Vector3(0, 180, 0),
-            new Vector3(0.5f, 0.5f, 0.7f),
-            Color.FromArgb(230, 241, 196, 15) // Golden highlight arrow
+            ConeRotation,
+            ConeScale,
+            ConeColor
         );
     }
 
@@ -989,9 +1007,11 @@ public class ForceSwimmingPeds : Script
         Vector3 camRight = RotationToDirection(rotRight) - RotationToDirection(rotLeft);
         Vector3 camUp = RotationToDirection(rotUp) - RotationToDirection(rotDown);
 
-        float rollRad = -(float)(camRot.Y * (Math.PI / 180.0));
-        Vector3 camRightRoll = (camRight * (float)Math.Cos(rollRad)) - (camUp * (float)Math.Sin(rollRad));
-        Vector3 camUpRoll = (camRight * (float)Math.Sin(rollRad)) + (camUp * (float)Math.Cos(rollRad));
+        float rollRad = -camRot.Y * DegToRad;
+        float cosRoll = (float)Math.Cos(rollRad);
+        float sinRoll = (float)Math.Sin(rollRad);
+        Vector3 camRightRoll = (camRight * cosRoll) - (camUp * sinRoll);
+        Vector3 camUpRoll = (camRight * sinRoll) + (camUp * cosRoll);
 
         Vector3 point3D = camPos + (camForward * 10.0f);
         Vector3 point3DTest = point3D + camRightRoll + camUpRoll;
@@ -1014,19 +1034,31 @@ public class ForceSwimmingPeds : Script
 
     private static bool WorldToScreen(Vector3 worldPos, out Vector2 screenPos)
     {
-        var outX = new OutputArgument();
-        var outY = new OutputArgument();
-        bool success = Function.Call<bool>(Hash.GET_SCREEN_COORD_FROM_WORLD_COORD, worldPos.X, worldPos.Y, worldPos.Z, outX, outY);
-        screenPos = new Vector2(outX.GetResult<float>(), outY.GetResult<float>());
-        return success;
+        using (var outX = new OutputArgument())
+        using (var outY = new OutputArgument())
+        {
+            bool success = Function.Call<bool>(Hash.GET_SCREEN_COORD_FROM_WORLD_COORD, worldPos.X, worldPos.Y, worldPos.Z, outX, outY);
+            screenPos = new Vector2(outX.GetResult<float>(), outY.GetResult<float>());
+            return success;
+        }
     }
 
     private static Vector3 RotationToDirection(Vector3 rot)
     {
-        float z = (float)(rot.Z * (Math.PI / 180.0));
-        float x = (float)(rot.X * (Math.PI / 180.0));
+        float z = rot.Z * DegToRad;
+        float x = rot.X * DegToRad;
         float num = (float)Math.Abs(Math.Cos(x));
         return new Vector3(-(float)(Math.Sin(z) * num), (float)(Math.Cos(z) * num), (float)Math.Sin(x));
+    }
+
+    private bool IsPedTracked(Ped ped)
+    {
+        for (int i = 0; i < _activeSwimmers.Count; i++)
+        {
+            if (_activeSwimmers[i].Ped == ped)
+                return true;
+        }
+        return false;
     }
 
     // ============================================================
@@ -1050,8 +1082,19 @@ public class ForceSwimmingPeds : Script
             }
 
             int stateElapsed = now - swimmer.StateStartTime;
-            float distToEntry = ped.Position.DistanceTo(swimmer.EntryPosition);
-            bool inWater = Function.Call<bool>(Hash.IS_PED_SWIMMING, ped.Handle) || Function.Call<bool>(Hash.IS_ENTITY_IN_WATER, ped.Handle);
+
+            // Lazy in-water evaluation helper
+            bool inWaterChecked = false;
+            bool inWater = false;
+            bool CheckInWater()
+            {
+                if (!inWaterChecked)
+                {
+                    inWater = Function.Call<bool>(Hash.IS_PED_SWIMMING, ped.Handle) || Function.Call<bool>(Hash.IS_ENTITY_IN_WATER, ped.Handle);
+                    inWaterChecked = true;
+                }
+                return inWater;
+            }
 
             switch (swimmer.State)
             {
@@ -1062,11 +1105,17 @@ public class ForceSwimmingPeds : Script
                         swimmer.State = SwimmerState.ReturningToEntry;
                         swimmer.StateStartTime = now;
                         swimmer.LastTaskTime = 0;
+
+                        if (swimmer.HadTaskLoop && swimmer.TaskType == 1 && !string.IsNullOrEmpty(swimmer.SavedAnimDict))
+                        {
+                            Function.Call(Hash.REQUEST_ANIM_DICT, swimmer.SavedAnimDict);
+                        }
                         break;
                     }
 
-                    float distToCenter = ped.Position.DistanceTo(_targetLocation);
-                    if (distToCenter <= 4.0f || (inWater && distToCenter <= 6.0f && stateElapsed > 4000))
+                    Vector3 posToCenter = ped.Position;
+                    float distToCenterSq = posToCenter.DistanceToSquared(_targetLocation);
+                    if (distToCenterSq <= 16.0f || (distToCenterSq <= 36.0f && stateElapsed > 4000 && CheckInWater()))
                     {
                         // Arrived in pool center, transition to active pool swimming
                         swimmer.State = SwimmerState.SwimmingInPool;
@@ -1089,6 +1138,11 @@ public class ForceSwimmingPeds : Script
                         swimmer.State = SwimmerState.ReturningToEntry;
                         swimmer.StateStartTime = now;
                         swimmer.LastTaskTime = 0;
+
+                        if (swimmer.HadTaskLoop && swimmer.TaskType == 1 && !string.IsNullOrEmpty(swimmer.SavedAnimDict))
+                        {
+                            Function.Call(Hash.REQUEST_ANIM_DICT, swimmer.SavedAnimDict);
+                        }
                         break;
                     }
 
@@ -1098,19 +1152,28 @@ public class ForceSwimmingPeds : Script
                         swimmer.State = SwimmerState.ReturningToEntry;
                         swimmer.StateStartTime = now;
                         swimmer.LastTaskTime = 0;
+
+                        if (swimmer.HadTaskLoop && swimmer.TaskType == 1 && !string.IsNullOrEmpty(swimmer.SavedAnimDict))
+                        {
+                            Function.Call(Hash.REQUEST_ANIM_DICT, swimmer.SavedAnimDict);
+                        }
                         break;
                     }
 
-                    // Keep ped within pool bounds
-                    float distFromCenter = ped.Position.DistanceTo(_targetLocation);
-                    if (distFromCenter > _radius * 0.88f)
+                    // Keep ped within pool bounds using squared distances
+                    Vector3 posInPool = ped.Position;
+                    float distFromCenterSq = posInPool.DistanceToSquared(_targetLocation);
+                    float maxBound = _radius * 0.88f;
+                    float maxBoundSq = maxBound * maxBound;
+
+                    if (distFromCenterSq > maxBoundSq)
                     {
                         // Ped drifting near boundary; navigate back toward center
                         swimmer.CurrentSubTarget = _targetLocation;
                         swimmer.LastTaskTime = now;
                         Function.Call(Hash.TASK_GO_STRAIGHT_TO_COORD, ped.Handle, _targetLocation.X, _targetLocation.Y, _targetLocation.Z, 1.3f, -1, 0.0f, 0.0f);
                     }
-                    else if (ped.Position.DistanceTo(swimmer.CurrentSubTarget) < 2.5f || (now - swimmer.LastTaskTime > 7000))
+                    else if (posInPool.DistanceToSquared(swimmer.CurrentSubTarget) < 6.25f || (now - swimmer.LastTaskTime > 7000))
                     {
                         // Reached current lap waypoint; choose next waypoint inside pool
                         swimmer.CurrentSubTarget = GetRandomPointInRadius(_targetLocation, _radius * 0.65f);
@@ -1120,8 +1183,11 @@ public class ForceSwimmingPeds : Script
                     break;
 
                 case SwimmerState.ReturningToEntry:
-                    // Check if ped has arrived back at their entry spot or watchdog
-                    if (distToEntry <= 1.5f || (distToEntry <= 2.2f && !inWater && stateElapsed > 6000) || stateElapsed > 35000)
+                    Vector3 posReturning = ped.Position;
+                    float distToEntrySq = posReturning.DistanceToSquared(swimmer.EntryPosition);
+
+                    // Check if ped has arrived back at their entry spot or watchdog (1.5m -> 2.25m^2, 2.2m -> 4.84m^2)
+                    if (distToEntrySq <= 2.25f || (distToEntrySq <= 4.84f && stateElapsed > 6000 && !CheckInWater()) || stateElapsed > 35000)
                     {
                         // Safely arrived back at entry position!
                         swimmer.State = SwimmerState.Resting;
@@ -1165,7 +1231,7 @@ public class ForceSwimmingPeds : Script
                     if (now - swimmer.LastTaskTime > 2500)
                     {
                         swimmer.LastTaskTime = now;
-                        if (inWater)
+                        if (CheckInWater())
                         {
                             // In water: swim straight towards entry point
                             Function.Call(Hash.TASK_GO_STRAIGHT_TO_COORD, ped.Handle, swimmer.EntryPosition.X, swimmer.EntryPosition.Y, swimmer.EntryPosition.Z, 1.4f, -1, 0.0f, 0.0f);
@@ -1223,8 +1289,17 @@ public class ForceSwimmingPeds : Script
             {
                 _lastCheckTime = now;
 
-                // Max 6 concurrent swimming peds
-                int activeCount = _activeSwimmers.Count(s => s.State == SwimmerState.SwimmingToCenter || s.State == SwimmerState.SwimmingInPool);
+                // Max 6 concurrent swimming peds (no LINQ allocation)
+                int activeCount = 0;
+                for (int j = 0; j < _activeSwimmers.Count; j++)
+                {
+                    var st = _activeSwimmers[j].State;
+                    if (st == SwimmerState.SwimmingToCenter || st == SwimmerState.SwimmingInPool)
+                    {
+                        activeCount++;
+                    }
+                }
+
                 if (activeCount < 6)
                 {
                     if (_random.Next(0, 100) < _swimChancePercent)
@@ -1242,26 +1317,27 @@ public class ForceSwimmingPeds : Script
         Ped[] nearbyPeds = World.GetNearbyPeds(_targetLocation, _radius);
         if (nearbyPeds == null || nearbyPeds.Length == 0) return;
 
-        var candidates = new List<Ped>();
-        foreach (var p in nearbyPeds)
+        _candidatePeds.Clear();
+        for (int i = 0; i < nearbyPeds.Length; i++)
         {
+            Ped p = nearbyPeds[i];
             if (p == null || !p.Exists() || !p.IsAlive || p == player || p.IsInVehicle())
                 continue;
 
             // Don't select if currently tracked (swimming, returning, or resting/immune)
-            if (_activeSwimmers.Any(s => s.Ped == p))
+            if (IsPedTracked(p))
                 continue;
 
             // Don't interrupt peds in combat or ragdolling
             if (p.IsInCombat || p.IsRagdoll)
                 continue;
 
-            candidates.Add(p);
+            _candidatePeds.Add(p);
         }
 
-        if (candidates.Count > 0)
+        if (_candidatePeds.Count > 0)
         {
-            Ped selected = candidates[_random.Next(candidates.Count)];
+            Ped selected = _candidatePeds[_random.Next(_candidatePeds.Count)];
             StartSwimRoutine(selected);
         }
     }
@@ -1312,8 +1388,9 @@ public class ForceSwimmingPeds : Script
                 {
                     hadTaskLoop = true;
                     taskType = 2;
-                    foreach (var s in KnownScenarios)
+                    for (int sIdx = 0; sIdx < KnownScenarios.Length; sIdx++)
                     {
+                        string s = KnownScenarios[sIdx];
                         if (Function.Call<bool>(Hash.IS_PED_USING_SCENARIO, ped.Handle, s))
                         {
                             scenarioName = s;
@@ -1326,7 +1403,7 @@ public class ForceSwimmingPeds : Script
         }
 
         // 3. If still not detected, check if playing animation from known APS profiles
-        if (!hadTaskLoop)
+        if (!hadTaskLoop && _apsProfiles.Count > 0)
         {
             try
             {
@@ -1469,13 +1546,15 @@ public class ForceSwimmingPeds : Script
         float y = center.Y + (float)(Math.Sin(angle) * dist);
         float z = center.Z;
 
-        var waterHeightArg = new OutputArgument();
-        if (Function.Call<bool>(Hash.GET_WATER_HEIGHT, x, y, z, waterHeightArg))
+        using (var waterHeightArg = new OutputArgument())
         {
-            float wh = waterHeightArg.GetResult<float>();
-            if (Math.Abs(wh - z) < 4.0f)
+            if (Function.Call<bool>(Hash.GET_WATER_HEIGHT, x, y, z, waterHeightArg))
             {
-                z = wh;
+                float wh = waterHeightArg.GetResult<float>();
+                if (Math.Abs(wh - z) < 4.0f)
+                {
+                    z = wh;
+                }
             }
         }
 
@@ -1484,8 +1563,9 @@ public class ForceSwimmingPeds : Script
 
     private void OnAborted(object sender, EventArgs e)
     {
-        foreach (var swimmer in _activeSwimmers)
+        for (int i = 0; i < _activeSwimmers.Count; i++)
         {
+            var swimmer = _activeSwimmers[i];
             if (swimmer.Ped != null && swimmer.Ped.Exists() && swimmer.Ped.IsAlive)
             {
                 Function.Call(Hash.CLEAR_PED_TASKS, swimmer.Ped.Handle);
@@ -1515,12 +1595,18 @@ public class ForceSwimmingPeds : Script
     // ============================================================
     private string GetIniPath()
     {
+        if (_cachedIniPath != null) return _cachedIniPath;
+
         string scriptsFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "scripts");
         if (Directory.Exists(scriptsFolder))
         {
-            return Path.Combine(scriptsFolder, IniFileName);
+            _cachedIniPath = Path.Combine(scriptsFolder, IniFileName);
         }
-        return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, IniFileName);
+        else
+        {
+            _cachedIniPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, IniFileName);
+        }
+        return _cachedIniPath;
     }
 
     private void LoadSettings()
@@ -1719,7 +1805,7 @@ public class ForceSwimmingPeds : Script
                 _activeLocation.SwimDuration = _swimDurationSeconds;
             }
 
-            var sb = new System.Text.StringBuilder();
+            var sb = new System.Text.StringBuilder(1024);
             sb.AppendLine("[Settings]");
             sb.AppendLine("; Key to open/close menu (Default: F5)");
             sb.AppendLine($"MenuKey={_menuKey}");
@@ -1730,8 +1816,9 @@ public class ForceSwimmingPeds : Script
             sb.AppendLine($"SwimDuration={_swimDurationSeconds}");
             sb.AppendLine();
 
-            foreach (var loc in _locations)
+            for (int i = 0; i < _locations.Count; i++)
             {
+                var loc = _locations[i];
                 sb.AppendLine($"[Location:{loc.Name}]");
                 sb.AppendLine($"CenterX={loc.Center.X.ToString("F3", CultureInfo.InvariantCulture)}");
                 sb.AppendLine($"CenterY={loc.Center.Y.ToString("F3", CultureInfo.InvariantCulture)}");
